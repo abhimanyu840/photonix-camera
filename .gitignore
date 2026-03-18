@@ -1,0 +1,40 @@
+# Flutter / Dart
+.dart_tool/
+.flutter-plugins
+.flutter-plugins-dependencies
+.packages
+build/
+.pub-cache/
+.pub/
+
+# Rust
+rust/target/
+rust_builder/target/
+**/*.rs.bk
+
+# Android
+android/.gradle/
+android/captures/
+android/local.properties
+android/key.properties
+*.jks
+*.keystore
+
+# ONNX models (large binaries — use Git LFS in P6)
+assets/models/*.onnx
+
+# Windows
+Thumbs.db
+Desktop.ini
+
+# IDEs
+.idea/
+.vscode/settings.json
+.vscode/launch.json
+*.suo
+*.user
+
+# Generated bridge code
+lib/src/rust/frb_generated.dart
+lib/src/rust/frb_generated.io.dart
+rust/src/frb_generated.rs
