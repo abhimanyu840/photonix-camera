@@ -1,88 +1,46 @@
-//! Classical pipeline orchestrator.
+//! Full pipeline orchestrator — classical + AI stages.
 //!
-//! Wires all compute stages in correct order.
-//! AI slots are stubbed — replaced in Phase 7.
+//! Stage order:
+//!   decode → scene classify → [classical: WB, stack, HDR, exposure] →
+//!   [AI: denoise, enhance] → tone map → sharpen →
+//!   [AI: super-res] → [AI: depth + bokeh] → encode
 //!
-//! Stage order (linear space unless noted):
-//!   decode JPEG → sRGB decode → white balance → [AI denoise stub] →
-//!   burst stack → [HDR merge if bracketed] → exposure → [AI enhance stub] →
-//!   tone map → gamma encode → [AI super-res stub] → sharpen → encode JPEG
+//! Progress events are sent via StreamSink so the Flutter UI can show
+//! live stage labels during the ~300ms processing window.
 
 use anyhow::Result;
-use image::{DynamicImage, ImageReader, RgbImage};
-use std::io::Cursor;
+use std::sync::Arc;
 
+use crate::ai::models::denoiser::run_denoiser;
+use crate::ai::models::depth::run_depth;
+use crate::ai::models::enhancer::run_enhancer;
+use crate::ai::models::scene_cls::classify_scene;
+use crate::ai::models::super_res::run_super_res;
 use crate::compute::burst_stack::{stack_burst, Frame};
 use crate::compute::color::{adjust_saturation, white_balance, WhiteBalanceMode};
 use crate::compute::exposure::gamma_lift;
 use crate::compute::hdr_merge::mertens_fusion;
 use crate::compute::sharpen::unsharp_mask;
 use crate::compute::tone_map::{srgb_to_linear, tone_map, ToneMappingMode};
-use crate::frb_generated::StreamSink;
+use crate::pipeline::bokeh::apply_bokeh;
+use crate::pipeline::scene::{PipelineConfig, Scene};
 
-/// Pipeline stage names — sent to Dart UI for progress overlay.
-pub const STAGE_DECODE: &str = "Decoding frames...";
-pub const STAGE_WB: &str = "White balance...";
-pub const STAGE_STACK: &str = "Stacking frames...";
-pub const STAGE_HDR: &str = "HDR merge...";
-pub const STAGE_EXPOSURE: &str = "Exposure correction...";
-pub const STAGE_TONEMAP: &str = "Tone mapping...";
-pub const STAGE_SHARPEN: &str = "Sharpening...";
-pub const STAGE_ENCODE: &str = "Encoding...";
-
-/// Progress event sent through the StreamSink to Dart.
+/// Progress event sent to Dart during processing.
 pub struct PipelineProgress {
     pub stage: String,
-    pub progress: f32, // 0.0 – 1.0
+    pub progress: f32,
 }
 
-/// Configuration for the classical pipeline.
-/// Boolean flags determine which stages run.
-/// All fields have sensible defaults via Default impl.
-pub struct ClassicalPipelineConfig {
-    /// Run multi-frame burst stack (requires >1 frame)
-    pub run_burst_stack: bool,
-    /// Run Mertens HDR fusion (requires bracketed exposures)
-    pub run_hdr_merge: bool,
-    /// Run gamma lift for shadow recovery
-    pub run_exposure_lift: bool,
-    pub exposure_lift_amount: f32,
-    /// White balance mode
-    pub white_balance_mode: WhiteBalanceMode,
-    /// Saturation boost (1.0 = unchanged)
-    pub saturation: f32,
-    /// Tone mapping mode
-    pub tone_mapping: ToneMappingMode,
-    /// Unsharp mask amount (0.0 = off)
-    pub sharpen_amount: f32,
-    /// JPEG output quality (0–100)
-    pub jpeg_quality: u8,
-}
+/// Decode JPEG bytes to a linear f32 Frame.
+pub fn decode_jpeg_to_frame(jpeg: &[u8]) -> Result<Frame> {
+    use image::{DynamicImage, ImageReader, RgbImage};
+    use std::io::Cursor;
 
-impl Default for ClassicalPipelineConfig {
-    fn default() -> Self {
-        Self {
-            run_burst_stack: true,
-            run_hdr_merge: false,
-            run_exposure_lift: true,
-            exposure_lift_amount: 0.1,
-            white_balance_mode: WhiteBalanceMode::GreyWorld,
-            saturation: 1.1, // slight boost
-            tone_mapping: ToneMappingMode::AcesFilmic,
-            sharpen_amount: 0.4,
-            jpeg_quality: 95,
-        }
-    }
-}
-
-/// Decode a JPEG byte slice into a linear f32 Frame.
-pub fn decode_jpeg(jpeg_bytes: &[u8]) -> Result<Frame> {
-    let reader = ImageReader::new(Cursor::new(jpeg_bytes)).with_guessed_format()?;
+    let reader = ImageReader::new(Cursor::new(jpeg)).with_guessed_format()?;
     let img: DynamicImage = reader.decode()?;
     let rgb: RgbImage = img.into_rgb8();
     let (w, h) = rgb.dimensions();
 
-    // Convert u8 sRGB → linear f32
     let pixels: Vec<f32> = rgb
         .as_raw()
         .iter()
@@ -93,14 +51,13 @@ pub fn decode_jpeg(jpeg_bytes: &[u8]) -> Result<Frame> {
 }
 
 /// Encode a linear f32 Frame to JPEG bytes.
-/// Applies sRGB gamma encoding internally.
-pub fn encode_jpeg(frame: &Frame, quality: u8) -> Result<Vec<u8>> {
+pub fn encode_frame_to_jpeg(frame: &Frame, quality: u8) -> Result<Vec<u8>> {
     use crate::compute::tone_map::linear_to_srgb;
     use image::codecs::jpeg::JpegEncoder;
+    use image::RgbImage;
 
     let w = frame.width;
     let h = frame.height;
-
     let u8_pixels: Vec<u8> = frame
         .pixels
         .iter()
@@ -113,85 +70,204 @@ pub fn encode_jpeg(frame: &Frame, quality: u8) -> Result<Vec<u8>> {
     let mut buf = Vec::new();
     let mut encoder = JpegEncoder::new_with_quality(&mut buf, quality);
     encoder.encode_image(&rgb)?;
-
     Ok(buf)
 }
 
-/// Run the classical pipeline on one or more JPEG frames.
+/// Run the full pipeline on JPEG frames.
 ///
-/// `progress_sink`: optional StreamSink for live stage updates to Dart.
-/// Returns the processed image as JPEG bytes.
-pub fn run_classical(
+/// `progress_fn`: called with (stage_name, 0.0-1.0) at each stage.
+///   Use this to update the StreamSink from image_api.rs.
+pub fn run_full_pipeline(
     jpeg_frames: Vec<Vec<u8>>,
-    config: ClassicalPipelineConfig,
-    progress_sink: Option<StreamSink<PipelineProgress>>,
+    config: &PipelineConfig,
+    scene: Scene,
+    mut progress_fn: impl FnMut(&str, f32),
 ) -> Result<Vec<u8>> {
-    macro_rules! report {
-        ($stage:expr, $pct:expr) => {
-            if let Some(ref sink) = progress_sink {
-                let _ = sink.add(PipelineProgress {
-                    stage: $stage.to_string(),
-                    progress: $pct,
-                });
-            }
-        };
-    }
-
     // ── 1. Decode all frames ─────────────────────────────────────────────────
-    report!(STAGE_DECODE, 0.05);
+    progress_fn("Decoding...", 0.05);
     let frames: Vec<Frame> = jpeg_frames
         .iter()
-        .map(|bytes| decode_jpeg(bytes))
+        .map(|b| decode_jpeg_to_frame(b))
         .collect::<Result<Vec<_>>>()?;
 
+    let w = frames[0].width as usize;
+    let h = frames[0].height as usize;
+
     // ── 2. White balance ──────────────────────────────────────────────────────
-    report!(STAGE_WB, 0.15);
+    progress_fn("White balance...", 0.10);
     let frames: Vec<Frame> = frames
         .into_iter()
         .map(|f| white_balance(f, WhiteBalanceMode::GreyWorld))
         .collect();
 
-    // ── 3. Burst stack ────────────────────────────────────────────────────────
-    let frame = if config.run_burst_stack && frames.len() > 1 {
-        report!(STAGE_STACK, 0.30);
-        stack_burst(frames)?
-    } else if config.run_hdr_merge && frames.len() > 1 {
-        report!(STAGE_HDR, 0.30);
+    // ── 3. Burst stack or HDR ─────────────────────────────────────────────────
+    let frame = if config.run_hdr && frames.len() > 1 {
+        progress_fn("HDR merge...", 0.20);
         mertens_fusion(&frames)
+    } else if frames.len() > 1 {
+        progress_fn("Stacking frames...", 0.20);
+        stack_burst(frames)?
     } else {
         frames.into_iter().next().unwrap()
     };
 
-    // ── 4. Saturation ─────────────────────────────────────────────────────────
-    let frame = adjust_saturation(frame, config.saturation);
-
-    // ── 5. Exposure lift ──────────────────────────────────────────────────────
-    report!(STAGE_EXPOSURE, 0.50);
-    let frame = if config.run_exposure_lift {
-        gamma_lift(frame, config.exposure_lift_amount)
+    // ── 4. AI denoiser ────────────────────────────────────────────────────────
+    let frame = if config.run_denoiser {
+        progress_fn("Denoising...", 0.30);
+        match run_denoiser(&frame.pixels, h, w) {
+            Ok(pixels) => Frame::new(pixels, frame.width, frame.height),
+            Err(e) => {
+                log::warn!("Denoiser failed: {e} — skipping");
+                frame
+            }
+        }
     } else {
         frame
     };
 
-    // ── 6. [AI denoiser stub — Phase 6/7] ────────────────────────────────────
-    // let frame = ai_denoise(frame); // replaced in P7
+    // ── 5. AI low-light enhancer ──────────────────────────────────────────────
+    let frame = if config.run_enhancer {
+        progress_fn("Enhancing...", 0.40);
+        match run_enhancer(&frame.pixels, h, w) {
+            Ok(pixels) => Frame::new(pixels, frame.width, frame.height),
+            Err(e) => {
+                log::warn!("Enhancer failed: {e} — skipping");
+                frame
+            }
+        }
+    } else {
+        frame
+    };
+
+    // ── 6. Saturation + exposure ──────────────────────────────────────────────
+    let frame = adjust_saturation(frame, 1.1);
+    let frame = gamma_lift(frame, 0.1);
 
     // ── 7. Tone mapping ───────────────────────────────────────────────────────
-    report!(STAGE_TONEMAP, 0.70);
-    let frame = tone_map(frame, config.tone_mapping);
+    progress_fn("Tone mapping...", 0.55);
+    let tone_mode = match config.tone_mapping.as_str() {
+        "reinhard" => ToneMappingMode::Reinhard,
+        "none" => ToneMappingMode::None,
+        _ => ToneMappingMode::AcesFilmic,
+    };
+    let frame = tone_map(frame, tone_mode);
 
     // ── 8. Sharpen ────────────────────────────────────────────────────────────
-    report!(STAGE_SHARPEN, 0.85);
-    let frame = if config.sharpen_amount > 0.0 {
-        unsharp_mask(frame, config.sharpen_amount)
+    progress_fn("Sharpening...", 0.65);
+    let frame = unsharp_mask(frame, 0.4);
+
+    // ── 9. AI super-resolution ────────────────────────────────────────────────
+    let frame = if config.run_super_res {
+        progress_fn("Enhancing detail...", 0.75);
+        match run_super_res(&frame.pixels, h, w) {
+            Ok(pixels) => {
+                let new_h = frame.height * 2;
+                let new_w = frame.width * 2;
+                Frame::new(pixels, new_w, new_h)
+            }
+            Err(e) => {
+                log::warn!("Super-res failed: {e} — skipping");
+                frame
+            }
+        }
     } else {
         frame
     };
 
-    // ── 9. Encode JPEG ────────────────────────────────────────────────────────
-    report!(STAGE_ENCODE, 0.95);
-    let jpeg = encode_jpeg(&frame, config.jpeg_quality)?;
+    // ── 10. Depth estimation + bokeh (portrait only) ──────────────────────────
+    let frame = if config.run_depth {
+        progress_fn("Applying bokeh...", 0.85);
 
-    report!("Done", 1.0);
+        // Use original resolution for depth (super-res may have 2x'd the frame)
+        let depth_h = if config.run_super_res {
+            h
+        } else {
+            frame.height as usize
+        };
+        let depth_w = if config.run_super_res {
+            w
+        } else {
+            frame.width as usize
+        };
+
+        // Sample down to original res for depth inference
+        let depth_pixels = if config.run_super_res {
+            // Downsample 2x frame back to original res for depth input
+            use crate::ai::preprocess::normalize::resize_bilinear;
+            resize_bilinear(
+                &frame.pixels,
+                frame.width as usize,
+                frame.height as usize,
+                depth_w,
+                depth_h,
+                3,
+            )
+        } else {
+            frame.pixels.clone()
+        };
+
+        match run_depth(&depth_pixels, depth_h, depth_w) {
+            Ok(disparity) => {
+                // Upsample disparity to match current frame size if needed
+                let disp_for_frame = if config.run_super_res {
+                    use crate::ai::preprocess::normalize::resize_bilinear;
+                    resize_bilinear(
+                        &disparity,
+                        depth_w,
+                        depth_h,
+                        frame.width as usize,
+                        frame.height as usize,
+                        1,
+                    )
+                } else {
+                    disparity
+                };
+                apply_bokeh(frame, &disp_for_frame, 0.7, 8.0)
+            }
+            Err(e) => {
+                log::warn!("Depth failed: {e} — skipping bokeh");
+                frame
+            }
+        }
+    } else {
+        frame
+    };
+
+    // ── 11. Encode ────────────────────────────────────────────────────────────
+    progress_fn("Saving...", 0.95);
+    let jpeg = encode_frame_to_jpeg(&frame, 95)?;
+
+    progress_fn("Done", 1.0);
     Ok(jpeg)
+}
+
+/// Detect scene from the first frame of a burst.
+/// Returns Scene::Standard if classification fails.
+pub fn detect_scene(first_frame_jpeg: &[u8]) -> Scene {
+    match decode_jpeg_to_frame(first_frame_jpeg) {
+        Ok(frame) => {
+            let h = frame.height as usize;
+            let w = frame.width as usize;
+            match classify_scene(&frame.pixels, h, w) {
+                Ok(ai_scene) => {
+                    // Map from ai::Scene to pipeline::Scene
+                    match ai_scene {
+                        crate::ai::models::scene_cls::Scene::Night => Scene::Night,
+                        crate::ai::models::scene_cls::Scene::Portrait => Scene::Portrait,
+                        crate::ai::models::scene_cls::Scene::Landscape => Scene::Landscape,
+                        crate::ai::models::scene_cls::Scene::Macro => Scene::Macro,
+                        crate::ai::models::scene_cls::Scene::Standard => Scene::Standard,
+                    }
+                }
+                Err(e) => {
+                    log::warn!("Scene classification failed: {e}");
+                    Scene::Standard
+                }
+            }
+        }
+        Err(e) => {
+            log::warn!("Frame decode failed for scene detection: {e}");
+            Scene::Standard
+        }
+    }
 }

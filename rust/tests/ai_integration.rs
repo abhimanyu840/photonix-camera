@@ -86,3 +86,38 @@ mod tests {
         }
     }
 }
+
+#[test]
+fn test_scene_pipeline_config() {
+    use photonix_core::pipeline::scene::Scene;
+
+    let night = Scene::Night.pipeline_config();
+    assert!(night.run_denoiser);
+    assert!(night.run_enhancer);
+    assert!(!night.run_super_res);
+    assert_eq!(night.burst_count, 7);
+
+    let portrait = Scene::Portrait.pipeline_config();
+    assert!(portrait.run_denoiser);
+    assert!(portrait.run_super_res);
+    assert!(portrait.run_depth);
+    assert_eq!(portrait.burst_count, 3);
+
+    let landscape = Scene::Landscape.pipeline_config();
+    assert!(!landscape.run_denoiser);
+    assert!(landscape.run_super_res);
+    assert!(landscape.run_hdr);
+
+    let standard = Scene::Standard.pipeline_config();
+    assert!(standard.run_denoiser);
+    assert!(!standard.run_super_res);
+    assert!(!standard.run_depth);
+}
+
+#[test]
+fn test_scene_from_hint() {
+    use photonix_core::pipeline::scene::Scene;
+    assert_eq!(Scene::from_hint("night"), Scene::Night);
+    assert_eq!(Scene::from_hint("PORTRAIT"), Scene::Portrait);
+    assert_eq!(Scene::from_hint("unknown"), Scene::Standard);
+}

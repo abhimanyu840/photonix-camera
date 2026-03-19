@@ -2,7 +2,19 @@
 //! All public functions here are auto-exposed to Dart by frb codegen.
 
 use crate::frb_generated::StreamSink;
-use crate::pipeline::orchestrator::{run_classical, ClassicalPipelineConfig, PipelineProgress};
+use crate::pipeline::orchestrator::{detect_scene, run_full_pipeline};
+use crate::pipeline::scene::{PipelineConfig, Scene};
+
+// ── Types exposed to Dart ─────────────────────────────────────────────────────
+
+/// Progress update streamed to Dart during pipeline execution.
+pub struct ProcessingUpdate {
+    pub stage: String,
+    pub progress: f32,
+    pub is_complete: bool,
+    pub result_bytes: Vec<u8>, // non-empty only when is_complete = true
+    pub error: String,         // non-empty only on error
+}
 
 /// Returned by benchmark_roundtrip.
 pub struct RoundtripResult {
@@ -12,35 +24,95 @@ pub struct RoundtripResult {
     pub message: String,
 }
 
-/// Configuration DTO passed from Dart.
-/// Maps 1:1 to ClassicalPipelineConfig.
-pub struct PipelineConfigDto {
-    pub run_burst_stack: bool,
-    pub run_hdr_merge: bool,
-    pub run_exposure_lift: bool,
-    pub exposure_lift_amount: f32,
-    pub saturation: f32,
-    pub tone_mapping: String, // "aces" | "reinhard" | "none"
-    pub sharpen_amount: f32,
-    pub jpeg_quality: u8,
-}
+// ── Core pipeline API ─────────────────────────────────────────────────────────
 
-impl Default for PipelineConfigDto {
-    fn default() -> Self {
-        Self {
-            run_burst_stack: true,
-            run_hdr_merge: false,
-            run_exposure_lift: true,
-            exposure_lift_amount: 0.1,
-            saturation: 1.1,
-            tone_mapping: "aces".to_string(),
-            sharpen_amount: 0.4,
-            jpeg_quality: 95,
+/// Process burst frames with live progress updates streamed to Dart.
+///
+/// Dart usage:
+/// ```dart
+/// final stream = captureAndProcess(frames: frames, sceneHint: "portrait");
+/// await for (final update in stream) {
+///   if (update.isComplete) {
+///     // update.resultBytes contains the processed JPEG
+///   } else {
+///     // update.stage + update.progress for overlay
+///   }
+/// }
+/// ```
+pub fn capture_and_process(
+    frames: Vec<Vec<u8>>,
+    scene_hint: Option<String>,
+    sink: StreamSink<ProcessingUpdate>,
+) {
+    // Run on background thread — never block the Dart UI thread
+    std::thread::spawn(move || {
+        let progress = {
+            let sink_ref = &sink;
+            move |stage: &str, progress: f32| {
+                let _ = sink_ref.add(ProcessingUpdate {
+                    stage: stage.to_string(),
+                    progress,
+                    is_complete: false,
+                    result_bytes: vec![],
+                    error: String::new(),
+                });
+            }
+        };
+
+        // Determine scene
+        let scene = if let Some(hint) = &scene_hint {
+            Scene::from_hint(hint)
+        } else if !frames.is_empty() {
+            detect_scene(&frames[0])
+        } else {
+            Scene::Standard
+        };
+
+        log::info!("[Pipeline] Scene: {:?}", scene);
+        let config = scene.pipeline_config();
+
+        // Run pipeline
+        match run_full_pipeline(frames, &config, scene, progress) {
+            Ok(jpeg_bytes) => {
+                let _ = sink.add(ProcessingUpdate {
+                    stage: "Done".to_string(),
+                    progress: 1.0,
+                    is_complete: true,
+                    result_bytes: jpeg_bytes,
+                    error: String::new(),
+                });
+            }
+            Err(e) => {
+                log::error!("[Pipeline] Failed: {e}");
+                let _ = sink.add(ProcessingUpdate {
+                    stage: String::new(),
+                    progress: 0.0,
+                    is_complete: false,
+                    result_bytes: vec![],
+                    error: e.to_string(),
+                });
+            }
         }
-    }
+    });
 }
 
-/// Engine version string — confirms .so loaded correctly.
+/// Process a single JPEG frame synchronously (no progress stream).
+/// Used by capture_coordinator for fast mode.
+pub fn process_single(frame: Vec<u8>, scene_hint: Option<String>) -> Vec<u8> {
+    let scene = scene_hint
+        .as_deref()
+        .map(Scene::from_hint)
+        .unwrap_or_else(|| detect_scene(&frame));
+    let config = scene.pipeline_config();
+
+    run_full_pipeline(vec![frame], &config, scene, |_, _| {}).unwrap_or_else(|e| {
+        log::error!("process_single failed: {e}");
+        vec![]
+    })
+}
+
+// ── P2 validation functions (kept for bridge test screen) ─────────────────────
+
 pub fn get_engine_version() -> String {
     format!(
         "Photonix Engine v{} (Rust 1.82+, frb 2.11)",
@@ -48,43 +120,10 @@ pub fn get_engine_version() -> String {
     )
 }
 
-/// Process a single JPEG frame through the classical pipeline.
-/// Returns processed JPEG bytes.
-pub fn process_single(frame: Vec<u8>, config: PipelineConfigDto) -> Vec<u8> {
-    let cfg = dto_to_config(config);
-    run_classical(vec![frame], cfg, None).unwrap_or_else(|e| {
-        log::error!("process_single failed: {e}");
-        vec![]
-    })
-}
-
-/// Process a burst of JPEG frames through the classical pipeline.
-/// Returns processed JPEG bytes.
-pub fn process_burst(frames: Vec<Vec<u8>>, config: PipelineConfigDto) -> Vec<u8> {
-    let cfg = dto_to_config(config);
-    run_classical(frames, cfg, None).unwrap_or_else(|e| {
-        log::error!("process_burst failed: {e}");
-        vec![]
-    })
-}
-
-/// Process a burst with live progress updates streamed to Dart.
-/// Returns Stream<PipelineProgress> in Dart.
-pub fn process_burst_with_progress(
-    frames: Vec<Vec<u8>>,
-    config: PipelineConfigDto,
-    sink: StreamSink<PipelineProgress>,
-) {
-    let cfg = dto_to_config(config);
-    let _ = run_classical(frames, cfg, Some(sink));
-}
-
-/// P2 passthrough — zero-copy validation.
 pub fn process_image_bytes(bytes: Vec<u8>) -> Vec<u8> {
     bytes
 }
 
-/// P2 benchmark — round-trip timing.
 pub fn benchmark_roundtrip(bytes: Vec<u8>) -> RoundtripResult {
     use std::time::Instant;
     let size = bytes.len() as u64;
@@ -101,28 +140,5 @@ pub fn benchmark_roundtrip(bytes: Vec<u8>) -> RoundtripResult {
             size / 1024,
             elapsed
         ),
-    }
-}
-
-// ── Internal helpers ──────────────────────────────────────────────────────────
-
-fn dto_to_config(dto: PipelineConfigDto) -> ClassicalPipelineConfig {
-    use crate::compute::color::WhiteBalanceMode;
-    use crate::compute::tone_map::ToneMappingMode;
-
-    ClassicalPipelineConfig {
-        run_burst_stack: dto.run_burst_stack,
-        run_hdr_merge: dto.run_hdr_merge,
-        run_exposure_lift: dto.run_exposure_lift,
-        exposure_lift_amount: dto.exposure_lift_amount,
-        white_balance_mode: WhiteBalanceMode::GreyWorld,
-        saturation: dto.saturation,
-        tone_mapping: match dto.tone_mapping.as_str() {
-            "reinhard" => ToneMappingMode::Reinhard,
-            "none" => ToneMappingMode::None,
-            _ => ToneMappingMode::AcesFilmic,
-        },
-        sharpen_amount: dto.sharpen_amount,
-        jpeg_quality: dto.jpeg_quality,
     }
 }
