@@ -4,37 +4,110 @@
 // ignore_for_file: invalid_use_of_internal_member, unused_import, unnecessary_import
 
 import '../frb_generated.dart';
+import '../pipeline/orchestrator.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
-/// Returns the Photonix engine version string.
-/// Called at app startup to confirm the Rust library loaded correctly.
+// These functions are ignored because they are not marked as `pub`: `dto_to_config`
+
+/// Engine version string — confirms .so loaded correctly.
 Future<String> getEngineVersion() =>
     RustLib.instance.api.crateApiImageApiGetEngineVersion();
 
-/// Passes image bytes through the Rust engine and returns them.
-/// In Phase 2 this is a passthrough — real processing added in P5/P6.
-/// Vec<u8> is automatically zero-copied to Dart Uint8List in async mode.
+/// Process a single JPEG frame through the classical pipeline.
+/// Returns processed JPEG bytes.
+Future<Uint8List> processSingle({
+  required List<int> frame,
+  required PipelineConfigDto config,
+}) => RustLib.instance.api.crateApiImageApiProcessSingle(
+  frame: frame,
+  config: config,
+);
+
+/// Process a burst of JPEG frames through the classical pipeline.
+/// Returns processed JPEG bytes.
+Future<Uint8List> processBurst({
+  required List<Uint8List> frames,
+  required PipelineConfigDto config,
+}) => RustLib.instance.api.crateApiImageApiProcessBurst(
+  frames: frames,
+  config: config,
+);
+
+/// Process a burst with live progress updates streamed to Dart.
+/// Returns Stream<PipelineProgress> in Dart.
+Stream<PipelineProgress> processBurstWithProgress({
+  required List<Uint8List> frames,
+  required PipelineConfigDto config,
+}) => RustLib.instance.api.crateApiImageApiProcessBurstWithProgress(
+  frames: frames,
+  config: config,
+);
+
+/// P2 passthrough — zero-copy validation.
 Future<Uint8List> processImageBytes({required List<int> bytes}) =>
     RustLib.instance.api.crateApiImageApiProcessImageBytes(bytes: bytes);
 
-/// Benchmarks the Dart → Rust → Dart round trip for a given buffer.
-/// Target: 4MB buffer must complete in under 5ms (5000 microseconds).
+/// P2 benchmark — round-trip timing.
 Future<RoundtripResult> benchmarkRoundtrip({required List<int> bytes}) =>
     RustLib.instance.api.crateApiImageApiBenchmarkRoundtrip(bytes: bytes);
 
-/// Result struct returned by benchmark_roundtrip.
-/// Timing fields are in microseconds for precision.
+/// Configuration DTO passed from Dart.
+/// Maps 1:1 to ClassicalPipelineConfig.
+class PipelineConfigDto {
+  final bool runBurstStack;
+  final bool runHdrMerge;
+  final bool runExposureLift;
+  final double exposureLiftAmount;
+  final double saturation;
+  final String toneMapping;
+  final double sharpenAmount;
+  final int jpegQuality;
+
+  const PipelineConfigDto({
+    required this.runBurstStack,
+    required this.runHdrMerge,
+    required this.runExposureLift,
+    required this.exposureLiftAmount,
+    required this.saturation,
+    required this.toneMapping,
+    required this.sharpenAmount,
+    required this.jpegQuality,
+  });
+
+  static Future<PipelineConfigDto> default_() =>
+      RustLib.instance.api.crateApiImageApiPipelineConfigDtoDefault();
+
+  @override
+  int get hashCode =>
+      runBurstStack.hashCode ^
+      runHdrMerge.hashCode ^
+      runExposureLift.hashCode ^
+      exposureLiftAmount.hashCode ^
+      saturation.hashCode ^
+      toneMapping.hashCode ^
+      sharpenAmount.hashCode ^
+      jpegQuality.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is PipelineConfigDto &&
+          runtimeType == other.runtimeType &&
+          runBurstStack == other.runBurstStack &&
+          runHdrMerge == other.runHdrMerge &&
+          runExposureLift == other.runExposureLift &&
+          exposureLiftAmount == other.exposureLiftAmount &&
+          saturation == other.saturation &&
+          toneMapping == other.toneMapping &&
+          sharpenAmount == other.sharpenAmount &&
+          jpegQuality == other.jpegQuality;
+}
+
+/// Returned by benchmark_roundtrip.
 class RoundtripResult {
-  /// Size of the buffer that was processed (bytes)
   final BigInt bufferSizeBytes;
-
-  /// Total time from Rust receiving bytes to returning bytes (microseconds)
   final BigInt rustProcessingUs;
-
-  /// Whether the round trip passed the 5ms threshold
   final bool passed;
-
-  /// Human-readable result message
   final String message;
 
   const RoundtripResult({

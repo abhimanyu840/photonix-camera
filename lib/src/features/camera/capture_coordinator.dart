@@ -44,8 +44,19 @@ class CaptureCoordinator {
       progressNotifier.update('Processing...', 0.3);
 
       final Uint8List firstFrame = frames.first;
-      final Uint8List result = await rust_api.processImageBytes(
-        bytes: firstFrame,
+      final dto = rust_api.PipelineConfigDto(
+        runBurstStack: frameCount > 1,
+        runHdrMerge: false,
+        runExposureLift: true,
+        exposureLiftAmount: 0.1,
+        saturation: 1.1,
+        toneMapping: 'aces',
+        sharpenAmount: 0.4,
+        jpegQuality: 95,
+      );
+      final Uint8List result = await rust_api.processBurst(
+        frames: frames,
+        config: dto,
       );
 
       progressNotifier.update('Saving...', 0.95);

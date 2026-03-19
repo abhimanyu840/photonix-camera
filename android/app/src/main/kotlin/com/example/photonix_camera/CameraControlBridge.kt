@@ -85,10 +85,14 @@ class CameraControlBridge(
         }
 
         photonixCamera = PhotonixCamera(context, lifecycleOwner).apply {
-            startCamera { textureId ->
+            startCamera { _ ->
+                // Camera fully bound — NOW create burst manager and signal ready
                 burstManager = BurstCaptureManager(imageCapture, cameraExecutor)
-                Log.d(TAG, "Camera ready, textureId=$textureId")
-                result.success(null)
+                Log.d(TAG, "Camera and burst manager ready")
+                // Must call result.success on main thread
+                android.os.Handler(android.os.Looper.getMainLooper()).post {
+                    result.success(null)
+                }
             }
         }
     }

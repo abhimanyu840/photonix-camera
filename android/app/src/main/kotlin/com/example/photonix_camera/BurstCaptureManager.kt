@@ -52,33 +52,34 @@ class BurstCaptureManager(
     }
 
     private suspend fun captureFrame(): ByteArray =
-        suspendCancellableCoroutine { cont: CancellableContinuation<ByteArray> ->
-            imageCapture.takePicture(
-                executor,
-                object : ImageCapture.OnImageCapturedCallback() {
-                    override fun onCaptureSuccess(image: ImageProxy) {
-                        try {
-                            // Convert YUV → JPEG before closing the ImageProxy
-                            val jpegBytes = image.use { proxy ->
-                                // Access the underlying Image for YUV conversion
-                                // ImageProxy wraps the Image — use the JPEG output
-                                // Note: ImageCapture with JPEG format returns JPEG directly
-                                val buffer = proxy.planes[0].buffer
-                                val bytes = ByteArray(buffer.remaining())
-                                buffer.get(bytes)
-                                bytes
-                            }
-                            cont.resume(jpegBytes)
-                        } catch (e: Exception) {
-                            cont.resumeWithException(e)
+    suspendCancellableCoroutine { cont ->
+        imageCapture.takePicture(
+            executor,
+            object : ImageCapture.OnImageCapturedCallback() {
+                override fun onCaptureSuccess(image: ImageProxy) {
+                    try {
+                        val buffer = image.planes[0].buffer
+                        val bytes = ByteArray(buffer.remaining())
+                        buffer.get(bytes)
+                        image.close()
+                        if (bytes.isEmpty()) {
+                            cont.resumeWithException(
+                                RuntimeException("Empty frame returned")
+                            )
+                        } else {
+                            cont.resume(bytes)
                         }
-                    }
-
-                    override fun onError(exception: ImageCaptureException) {
-                        Log.e(TAG, "Capture error: ${exception.message}")
-                        cont.resumeWithException(exception)
+                    } catch (e: Exception) {
+                        image.close()
+                        cont.resumeWithException(e)
                     }
                 }
-            )
-        }
+
+                override fun onError(exception: ImageCaptureException) {
+                    Log.e(TAG, "Capture error code=${exception.imageCaptureError}: ${exception.message}")
+                    cont.resumeWithException(exception)
+                }
+            }
+        )
+    }
 }
