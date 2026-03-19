@@ -8,13 +8,11 @@ import 'src/shared/theme/app_theme.dart';
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
-  // Lock to portrait — camera apps are portrait-first
   await SystemChrome.setPreferredOrientations([
     DeviceOrientation.portraitUp,
     DeviceOrientation.portraitDown,
   ]);
 
-  // Immersive mode — hide status + nav bars in camera view
   SystemChrome.setSystemUIOverlayStyle(
     const SystemUiOverlayStyle(
       statusBarColor: Colors.transparent,
@@ -22,13 +20,19 @@ Future<void> main() async {
     ),
   );
 
-  // Initialize Rust bridge — must complete before runApp
-  await RustLib.init();
+  // Initialize Rust bridge with timeout — ORT init can hang on some devices
+  try {
+    await RustLib.init().timeout(
+      const Duration(seconds: 10),
+      onTimeout: () {
+        debugPrint('[Main] RustLib.init() timed out — continuing anyway');
+      },
+    );
+  } catch (e) {
+    debugPrint('[Main] RustLib.init() failed: $e — continuing anyway');
+  }
 
-  runApp(
-    // ProviderScope at root — makes all providers available everywhere
-    const ProviderScope(child: PhotonixApp()),
-  );
+  runApp(const ProviderScope(child: PhotonixApp()));
 }
 
 class PhotonixApp extends StatelessWidget {
