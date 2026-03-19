@@ -5,6 +5,9 @@ import '../../providers/providers.dart';
 import '../../shared/theme/app_theme.dart';
 import '../../shared/widgets/capture_button.dart';
 import '../../shared/widgets/processing_overlay.dart';
+// Add this import at the top of camera_screen.dart:
+import 'camera_preview_widget.dart';
+import 'capture_coordinator.dart';
 
 /// Main camera screen — viewfinder + controls.
 /// CameraX preview added in Phase 4.
@@ -23,19 +26,7 @@ class CameraScreen extends ConsumerWidget {
         fit: StackFit.expand,
         children: [
           // ── Viewfinder placeholder (replaced with CameraX preview in P4) ──
-          Container(
-            color: const Color(0xFF0D0D0D),
-            child: const Center(
-              child: Text(
-                'Camera preview\nPhase 4',
-                textAlign: TextAlign.center,
-                style: TextStyle(
-                  color: PhotonixColors.textTertiary,
-                  fontSize: 13,
-                ),
-              ),
-            ),
-          ),
+          const CameraPreviewWidget(),
 
           // ── Processing overlay (fades in during AI pipeline) ───────────────
           const ProcessingOverlay(),
@@ -115,32 +106,19 @@ class CameraScreen extends ConsumerWidget {
   }
 
   void _onShutter(WidgetRef ref) {
-    // Full implementation in Phase 7.
-    // For now: cycle through states to test the UI.
     final mode = ref.read(cameraStateProvider);
-    final notifier = ref.read(cameraStateProvider.notifier);
-    final progressNotifier = ref.read(processingProgressProvider.notifier);
+    if (mode != CameraMode.idle) return; // ignore tap during processing
 
-    if (mode == CameraMode.idle) {
-      notifier.startCapture();
-      Future.delayed(const Duration(milliseconds: 300), () {
-        notifier.startProcessing();
-        progressNotifier.update('Denoising...', 0.2);
-        Future.delayed(const Duration(milliseconds: 400), () {
-          progressNotifier.update('Enhancing detail...', 0.6);
-          Future.delayed(const Duration(milliseconds: 400), () {
-            progressNotifier.update('Applying bokeh...', 0.9);
-            Future.delayed(const Duration(milliseconds: 200), () {
-              notifier.finishProcessing();
-              progressNotifier.reset();
-              Future.delayed(const Duration(seconds: 2), () {
-                notifier.reset();
-              });
-            });
-          });
+    final coordinator = ref.read(captureCoordinatorProvider);
+    coordinator.capture().then((result) {
+      if (result != null) {
+        debugPrint('Capture complete: ${result.length} bytes');
+        // P10: save to gallery
+        Future.delayed(const Duration(seconds: 2), () {
+          ref.read(cameraStateProvider.notifier).reset();
         });
-      });
-    }
+      }
+    });
   }
 }
 
