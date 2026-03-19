@@ -4,103 +4,82 @@
 // ignore_for_file: invalid_use_of_internal_member, unused_import, unnecessary_import
 
 import '../frb_generated.dart';
-import '../pipeline/orchestrator.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
-// These functions are ignored because they are not marked as `pub`: `dto_to_config`
+/// Process burst frames with live progress updates streamed to Dart.
+///
+/// Dart usage:
+/// ```dart
+/// final stream = captureAndProcess(frames: frames, sceneHint: "portrait");
+/// await for (final update in stream) {
+///   if (update.isComplete) {
+///     // update.resultBytes contains the processed JPEG
+///   } else {
+///     // update.stage + update.progress for overlay
+///   }
+/// }
+/// ```
+Stream<ProcessingUpdate> captureAndProcess({
+  required List<Uint8List> frames,
+  String? sceneHint,
+}) => RustLib.instance.api.crateApiImageApiCaptureAndProcess(
+  frames: frames,
+  sceneHint: sceneHint,
+);
 
-/// Engine version string — confirms .so loaded correctly.
+/// Process a single JPEG frame synchronously (no progress stream).
+/// Used by capture_coordinator for fast mode.
+Future<Uint8List> processSingle({
+  required List<int> frame,
+  String? sceneHint,
+}) => RustLib.instance.api.crateApiImageApiProcessSingle(
+  frame: frame,
+  sceneHint: sceneHint,
+);
+
 Future<String> getEngineVersion() =>
     RustLib.instance.api.crateApiImageApiGetEngineVersion();
 
-/// Process a single JPEG frame through the classical pipeline.
-/// Returns processed JPEG bytes.
-Future<Uint8List> processSingle({
-  required List<int> frame,
-  required PipelineConfigDto config,
-}) => RustLib.instance.api.crateApiImageApiProcessSingle(
-  frame: frame,
-  config: config,
-);
-
-/// Process a burst of JPEG frames through the classical pipeline.
-/// Returns processed JPEG bytes.
-Future<Uint8List> processBurst({
-  required List<Uint8List> frames,
-  required PipelineConfigDto config,
-}) => RustLib.instance.api.crateApiImageApiProcessBurst(
-  frames: frames,
-  config: config,
-);
-
-/// Process a burst with live progress updates streamed to Dart.
-/// Returns Stream<PipelineProgress> in Dart.
-Stream<PipelineProgress> processBurstWithProgress({
-  required List<Uint8List> frames,
-  required PipelineConfigDto config,
-}) => RustLib.instance.api.crateApiImageApiProcessBurstWithProgress(
-  frames: frames,
-  config: config,
-);
-
-/// P2 passthrough — zero-copy validation.
 Future<Uint8List> processImageBytes({required List<int> bytes}) =>
     RustLib.instance.api.crateApiImageApiProcessImageBytes(bytes: bytes);
 
-/// P2 benchmark — round-trip timing.
 Future<RoundtripResult> benchmarkRoundtrip({required List<int> bytes}) =>
     RustLib.instance.api.crateApiImageApiBenchmarkRoundtrip(bytes: bytes);
 
-/// Configuration DTO passed from Dart.
-/// Maps 1:1 to ClassicalPipelineConfig.
-class PipelineConfigDto {
-  final bool runBurstStack;
-  final bool runHdrMerge;
-  final bool runExposureLift;
-  final double exposureLiftAmount;
-  final double saturation;
-  final String toneMapping;
-  final double sharpenAmount;
-  final int jpegQuality;
+/// Progress update streamed to Dart during pipeline execution.
+class ProcessingUpdate {
+  final String stage;
+  final double progress;
+  final bool isComplete;
+  final Uint8List resultBytes;
+  final String error;
 
-  const PipelineConfigDto({
-    required this.runBurstStack,
-    required this.runHdrMerge,
-    required this.runExposureLift,
-    required this.exposureLiftAmount,
-    required this.saturation,
-    required this.toneMapping,
-    required this.sharpenAmount,
-    required this.jpegQuality,
+  const ProcessingUpdate({
+    required this.stage,
+    required this.progress,
+    required this.isComplete,
+    required this.resultBytes,
+    required this.error,
   });
-
-  static Future<PipelineConfigDto> default_() =>
-      RustLib.instance.api.crateApiImageApiPipelineConfigDtoDefault();
 
   @override
   int get hashCode =>
-      runBurstStack.hashCode ^
-      runHdrMerge.hashCode ^
-      runExposureLift.hashCode ^
-      exposureLiftAmount.hashCode ^
-      saturation.hashCode ^
-      toneMapping.hashCode ^
-      sharpenAmount.hashCode ^
-      jpegQuality.hashCode;
+      stage.hashCode ^
+      progress.hashCode ^
+      isComplete.hashCode ^
+      resultBytes.hashCode ^
+      error.hashCode;
 
   @override
   bool operator ==(Object other) =>
       identical(this, other) ||
-      other is PipelineConfigDto &&
+      other is ProcessingUpdate &&
           runtimeType == other.runtimeType &&
-          runBurstStack == other.runBurstStack &&
-          runHdrMerge == other.runHdrMerge &&
-          runExposureLift == other.runExposureLift &&
-          exposureLiftAmount == other.exposureLiftAmount &&
-          saturation == other.saturation &&
-          toneMapping == other.toneMapping &&
-          sharpenAmount == other.sharpenAmount &&
-          jpegQuality == other.jpegQuality;
+          stage == other.stage &&
+          progress == other.progress &&
+          isComplete == other.isComplete &&
+          resultBytes == other.resultBytes &&
+          error == other.error;
 }
 
 /// Returned by benchmark_roundtrip.

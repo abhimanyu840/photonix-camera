@@ -7,15 +7,10 @@ import '../../rust/api/image_api.dart' as rust_api;
 import 'camera_channel.dart';
 
 /// Orchestrates the full capture pipeline:
-///   1. Determine burst frame count from scene/settings
-///   2. Tell CameraX to capture N frames (via MethodChannel)
-///   3. Pass each frame through the Rust bridge (zero-copy)
-///   4. Update progress state so the UI shows stage labels
-///   5. Return the final processed image bytes
-///
-/// Phase 4: captureBurst → raw frames returned (no Rust processing yet)
-/// Phase 5: classical pipeline added in Rust
-/// Phase 7: AI routing + scene classification added
+///   1. CameraX burst capture (via MethodChannel)
+///   2. Scene detection + AI pipeline (via Rust bridge with StreamSink)
+///   3. Live progress updates → ProcessingProgressNotifier
+///   4. Atomic preview swap on completion
 class CaptureCoordinator {
   final Ref _ref;
 
@@ -27,7 +22,7 @@ class CaptureCoordinator {
     final settings = _ref.read(settingsProvider);
 
     try {
-      // ── Step 1: Capture burst frames ──────────────────────────────────────
+      // ── Step 1: Burst capture ─────────────────────────────────────────────
       cameraNotifier.startCapture();
       progressNotifier.update('Capturing...', 0.05);
 
@@ -37,35 +32,51 @@ class CaptureCoordinator {
       final frames = await CameraChannel().captureBurst(frameCount);
       debugPrint('[Coordinator] Got ${frames.length} frames from CameraX');
 
-      // ── Step 2: Pass first frame through Rust bridge (P4 validation) ──────
-      // Phase 5 will replace this with the full classical pipeline
-      // Phase 7 will add AI routing
+      // ── Step 2: Start AI pipeline with StreamSink progress ────────────────
       cameraNotifier.startProcessing();
-      progressNotifier.update('Processing...', 0.3);
 
-      final Uint8List firstFrame = frames.first;
-      final dto = rust_api.PipelineConfigDto(
-        runBurstStack: frameCount > 1,
-        runHdrMerge: false,
-        runExposureLift: true,
-        exposureLiftAmount: 0.1,
-        saturation: 1.1,
-        toneMapping: 'aces',
-        sharpenAmount: 0.4,
-        jpegQuality: 95,
-      );
-      final Uint8List result = await rust_api.processBurst(
+      Uint8List? result;
+      String? errorMsg;
+
+      // captureAndProcess returns a Stream<ProcessingUpdate>
+      final stream = rust_api.captureAndProcess(
         frames: frames,
-        config: dto,
+        sceneHint: null, // let Rust detect scene automatically
       );
 
-      progressNotifier.update('Saving...', 0.95);
-      await Future.delayed(const Duration(milliseconds: 100));
+      await for (final update in stream) {
+        if (update.error.isNotEmpty) {
+          errorMsg = update.error;
+          break;
+        }
 
+        if (update.isComplete) {
+          result = Uint8List.fromList(update.resultBytes);
+          progressNotifier.update('Done', 1.0);
+          break;
+        } else {
+          // Live stage update → drives ProcessingOverlay widget
+          progressNotifier.update(update.stage, update.progress);
+        }
+      }
+
+      if (errorMsg != null) {
+        debugPrint('[Coordinator] Pipeline error: $errorMsg');
+        cameraNotifier.reset();
+        progressNotifier.reset();
+        return null;
+      }
+
+      // ── Step 3: Finish ────────────────────────────────────────────────────
       cameraNotifier.finishProcessing();
-      progressNotifier.reset();
 
-      debugPrint('[Coordinator] Pipeline complete — ${result.length} bytes');
+      // Reset to idle after 2 seconds so user can tap shutter again
+      Future.delayed(const Duration(seconds: 2), () {
+        cameraNotifier.reset();
+        progressNotifier.reset();
+      });
+
+      debugPrint('[Coordinator] Complete — ${result?.length ?? 0} bytes');
       return result;
     } catch (e) {
       debugPrint('[Coordinator] Capture failed: $e');
@@ -76,9 +87,6 @@ class CaptureCoordinator {
   }
 
   /// Burst frame count per quality tier.
-  /// Night: 7 (√7 = 2.6× SNR improvement)
-  /// Portrait/Standard: 3
-  /// Fast: 1 (single frame)
   int _burstCount(QualityTier tier) => switch (tier) {
     QualityTier.aiEnhanced => 3,
     QualityTier.standard => 3,
@@ -86,5 +94,4 @@ class CaptureCoordinator {
   };
 }
 
-/// Provider so CaptureCoordinator can be accessed anywhere.
 final captureCoordinatorProvider = Provider((ref) => CaptureCoordinator(ref));
