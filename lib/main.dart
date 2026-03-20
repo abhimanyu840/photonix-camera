@@ -23,6 +23,7 @@ Future<void> main() async {
   // Initialize Rust bridge with timeout — ORT init can hang on some devices
   try {
     await RustLib.init().timeout(
+      await rust_api.initPhotonixEngine();
       const Duration(seconds: 10),
       onTimeout: () {
         debugPrint('[Main] RustLib.init() timed out — continuing anyway');
@@ -31,6 +32,7 @@ Future<void> main() async {
   } catch (e) {
     debugPrint('[Main] RustLib.init() failed: $e — continuing anyway');
   }
+  
 
   runApp(const ProviderScope(child: PhotonixApp()));
 }

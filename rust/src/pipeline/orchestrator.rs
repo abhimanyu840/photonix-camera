@@ -10,6 +10,8 @@
 
 use anyhow::Result;
 use std::sync::Arc;
+use once_cell::sync::Lazy;
+use std::sync::Mutex;
 
 use crate::ai::models::denoiser::run_denoiser;
 use crate::ai::models::depth::run_depth;
@@ -270,4 +272,24 @@ pub fn detect_scene(first_frame_jpeg: &[u8]) -> Scene {
             Scene::Standard
         }
     }
+}
+
+
+
+/// Pre-allocated scratch buffer for intermediate pipeline stages.
+/// Avoids repeated heap allocation for 12MP float32 frames (~140MB each).
+static SCRATCH_BUFFER: Lazy<Mutex<Vec<f32>>> = Lazy::new(|| {
+    // Pre-allocate for 12MP RGB float32 = 4032 * 3024 * 3 * 4 bytes = ~144MB
+    // Start with 1MP — grows on first 12MP capture
+    Mutex::new(Vec::with_capacity(1920 * 1080 * 3))
+});
+
+/// Get a cleared scratch buffer of at least `size` elements.
+pub fn get_scratch(size: usize) -> std::sync::MutexGuard<'static, Vec<f32>> {
+    let mut buf = SCRATCH_BUFFER.lock().unwrap();
+    if buf.capacity() < size {
+        buf.reserve(size - buf.len());
+    }
+    buf.clear();
+    buf
 }

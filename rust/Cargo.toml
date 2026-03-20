@@ -77,3 +77,6 @@ panic = "abort"
 
 [profile.dev]
 opt-level = 1
+
+[dependencies.num_cpus]
+version = "1.16"

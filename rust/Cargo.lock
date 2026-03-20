@@ -1628,6 +1628,7 @@ dependencies = [
  "log 0.4.29",
  "nalgebra 0.33.2",
  "ndarray",
+ "num_cpus",
  "once_cell",
  "ort",
  "rayon",

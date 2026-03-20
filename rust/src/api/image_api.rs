@@ -142,3 +142,31 @@ pub fn benchmark_roundtrip(bytes: Vec<u8>) -> RoundtripResult {
         ),
     }
 }
+/// Called once when RustLib.init() runs on app startup.
+pub fn init_photonix_engine() {
+    crate::configure_rayon();
+    if let Err(e) = crate::ai::session_pool::init_ort() {
+        log::error!("ORT init failed: {e}");
+    }
+    log::info!(
+        "[Engine] Photonix Engine v{} initialised",
+        env!("CARGO_PKG_VERSION")
+    );
+}
+
+/// Pre-warm the scene classifier at app launch.
+/// Loads the model into the LRU cache so the first capture doesn't pay
+/// the model load cost (~50-200ms depending on storage speed).
+///
+/// Called in background after UI is visible — does NOT block startup.
+pub fn prewarm_scene_classifier(model_path: String) {
+    std::thread::spawn(move || {
+        use crate::ai::model_cache::register_models;
+        register_models(&[("scene_cls", &model_path)]);
+
+        match crate::ai::model_cache::load_model("scene_cls") {
+            Ok(_) => log::info!("[Prewarm] Scene classifier ready"),
+            Err(e) => log::warn!("[Prewarm] Scene classifier failed: {e}"),
+        }
+    });
+}
