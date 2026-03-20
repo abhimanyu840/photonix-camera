@@ -13,11 +13,10 @@ class MainActivity : FlutterActivity() {
 
     // Register camera MethodChannel
     cameraControlBridge = CameraControlBridge(
-        context = applicationContext,
-        lifecycleOwner = this,
-        flutterEngine = flutterEngine
-    )
-
+    context = applicationContext,
+    lifecycleOwner = this,  // 'this' = MainActivity = correct LifecycleOwner
+    flutterEngine = flutterEngine
+)
     // Register native view factory for the camera preview
     flutterEngine.platformViewsController.registry
         .registerViewFactory(

@@ -3,7 +3,7 @@
 
 use crate::frb_generated::StreamSink;
 use crate::pipeline::orchestrator::{detect_scene, run_full_pipeline};
-use crate::pipeline::scene::{PipelineConfig, Scene};
+use crate::pipeline::scene::Scene;
 
 // ── Types exposed to Dart ─────────────────────────────────────────────────────
 

@@ -1,101 +1,76 @@
+import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
-import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'camera_channel.dart';
 import '../../shared/theme/app_theme.dart';
+import 'camera_channel.dart';
 
-/// Displays the live camera preview using an AndroidView.
-///
-/// AndroidView embeds the native PreviewView into the Flutter widget tree.
-/// This is the correct approach for CameraX — the alternative (Texture widget)
-/// requires more setup and doesn't support all CameraX features.
-///
-/// Phase 4: Shows live viewfinder.
-/// Phase 7: Preview is frozen during AI processing, replaced with result.
-class CameraPreviewWidget extends ConsumerStatefulWidget {
+class CameraPreviewWidget extends StatefulWidget {
   const CameraPreviewWidget({super.key});
 
   @override
-  ConsumerState<CameraPreviewWidget> createState() =>
-      _CameraPreviewWidgetState();
+  State<CameraPreviewWidget> createState() => _CameraPreviewWidgetState();
 }
 
-class _CameraPreviewWidgetState extends ConsumerState<CameraPreviewWidget> {
-  bool _cameraReady = false;
+class _CameraPreviewWidgetState extends State<CameraPreviewWidget> {
+  bool _ready = false;
   String? _error;
 
   @override
   void initState() {
     super.initState();
-    _initCamera();
+    _init();
   }
 
-  Future<void> _initCamera() async {
+  Future<void> _init() async {
     try {
-      await CameraChannel().initCamera();
-      if (mounted) {
-        setState(() => _cameraReady = true);
+      if (!CameraChannel().isInitialized) {
+        await CameraChannel().initCamera();
       }
+      if (mounted) setState(() => _ready = true);
     } catch (e) {
-      if (mounted) {
-        setState(() => _error = e.toString());
-      }
+      if (mounted) setState(() => _error = e.toString());
     }
   }
 
   @override
   Widget build(BuildContext context) {
     if (_error != null) {
-      return Container(
+      return ColoredBox(
         color: Colors.black,
         child: Center(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              const Icon(
-                Icons.error_outline,
-                color: PhotonixColors.error,
-                size: 32,
-              ),
-              const SizedBox(height: 8),
-              Text(
-                'Camera error:\n$_error',
-                textAlign: TextAlign.center,
-                style: const TextStyle(
-                  color: PhotonixColors.error,
-                  fontSize: 12,
-                ),
-              ),
-            ],
+          child: Padding(
+            padding: const EdgeInsets.all(24),
+            child: Text(
+              'Camera error: $_error',
+              style: const TextStyle(color: PhotonixColors.error, fontSize: 12),
+              textAlign: TextAlign.center,
+            ),
           ),
         ),
       );
     }
 
-    if (!_cameraReady) {
-      return const ColoredBox(
-        color: Colors.black,
-        child: Center(
-          child: CircularProgressIndicator(
-            color: PhotonixColors.accent,
-            strokeWidth: 2,
-          ),
-        ),
-      );
+    final controller = CameraChannel().controller;
+    if (!_ready || controller == null || !controller.value.isInitialized) {
+      return const ColoredBox(color: Colors.black);
     }
 
-    // AndroidView embeds the native CameraX PreviewView
-    return AndroidView(
-      viewType: 'com.photonix/preview',
-      layoutDirection: TextDirection.ltr,
-      creationParams: const <String, dynamic>{},
-      creationParamsCodec: const StandardMessageCodec(),
+    // Correct aspect ratio — avoid stretch and over-zoom
+    return SizedBox.expand(
+      child: FittedBox(
+        fit: BoxFit.cover,
+        child: SizedBox(
+          width: controller.value.previewSize?.height ?? 1920,
+          height: controller.value.previewSize?.width ?? 1080,
+          child: CameraPreview(controller),
+        ),
+      ),
     );
   }
 
   @override
   void dispose() {
-    CameraChannel().dispose();
+    // Don't dispose CameraChannel here — it's a singleton
+    // Disposal is handled by CameraScreen
     super.dispose();
   }
 }

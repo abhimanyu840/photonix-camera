@@ -9,14 +9,11 @@
 use anyhow::Result;
 use ort::session::{builder::GraphOptimizationLevel, Session};
 use std::path::Path;
-use std::sync::Arc;
 
 /// Initialize ORT once at startup.
 /// Call before any session is built.
 pub fn init_ort() -> Result<()> {
-    ort::init()
-        .commit()
-        .map_err(|e| anyhow::anyhow!("ORT init: {e}"))?;
+    ort::init().commit();
     Ok(())
 }
 
@@ -44,10 +41,8 @@ pub fn build_session(model_path: &Path) -> Result<Session> {
         .map_err(|e| anyhow::anyhow!("load '{}': {e}", model_path.display()))?;
 
     log::info!(
-        "[ORT] Loaded: {} ({} inputs, {} outputs)",
-        model_path.file_name().unwrap_or_default().to_string_lossy(),
-        session.inputs.len(),
-        session.outputs.len(),
+        "[ORT] Loaded: {}",
+        model_path.file_name().unwrap_or_default().to_string_lossy()
     );
 
     Ok(session)

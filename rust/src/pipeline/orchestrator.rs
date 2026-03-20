@@ -9,8 +9,8 @@
 //! live stage labels during the ~300ms processing window.
 
 use anyhow::Result;
-use std::sync::Arc;
 use once_cell::sync::Lazy;
+use std::sync::Arc;
 use std::sync::Mutex;
 
 use crate::ai::models::denoiser::run_denoiser;
@@ -82,7 +82,7 @@ pub fn encode_frame_to_jpeg(frame: &Frame, quality: u8) -> Result<Vec<u8>> {
 pub fn run_full_pipeline(
     jpeg_frames: Vec<Vec<u8>>,
     config: &PipelineConfig,
-    scene: Scene,
+    _scene: Scene,
     mut progress_fn: impl FnMut(&str, f32),
 ) -> Result<Vec<u8>> {
     // ── 1. Decode all frames ─────────────────────────────────────────────────
@@ -274,8 +274,6 @@ pub fn detect_scene(first_frame_jpeg: &[u8]) -> Scene {
     }
 }
 
-
-
 /// Pre-allocated scratch buffer for intermediate pipeline stages.
 /// Avoids repeated heap allocation for 12MP float32 frames (~140MB each).
 static SCRATCH_BUFFER: Lazy<Mutex<Vec<f32>>> = Lazy::new(|| {
@@ -287,8 +285,9 @@ static SCRATCH_BUFFER: Lazy<Mutex<Vec<f32>>> = Lazy::new(|| {
 /// Get a cleared scratch buffer of at least `size` elements.
 pub fn get_scratch(size: usize) -> std::sync::MutexGuard<'static, Vec<f32>> {
     let mut buf = SCRATCH_BUFFER.lock().unwrap();
-    if buf.capacity() < size {
-        buf.reserve(size - buf.len());
+    let cap = buf.capacity();
+    if cap < size {
+        buf.reserve(size - cap);
     }
     buf.clear();
     buf
