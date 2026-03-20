@@ -13,6 +13,7 @@ use anyhow::{anyhow, Result};
 use rayon::prelude::*;
 
 /// A decoded frame in linear f32 RGB.
+#[derive(Clone)]
 pub struct Frame {
     pub pixels: Vec<f32>, // interleaved RGB, linear light
     pub width: u32,
