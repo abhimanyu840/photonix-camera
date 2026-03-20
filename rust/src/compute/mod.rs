@@ -4,3 +4,4 @@ pub mod exposure;
 pub mod hdr_merge;
 pub mod sharpen;
 pub mod tone_map;
+pub mod color_science;  

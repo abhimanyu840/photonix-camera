@@ -12,6 +12,12 @@ pub const MODEL_KEY_DENOISER: &str = "denoiser";
 pub const MODEL_KEY_ENHANCER: &str = "enhancer";
 pub const MODEL_KEY_SUPER_RES: &str = "super_res";
 pub const MODEL_KEY_DEPTH: &str = "depth";
+// Phase 11 additions:
+pub const MODEL_KEY_DEBLUR: &str = "deblur"; // DeblurGAN-v2 (optional)
+pub const MODEL_KEY_HDRNET: &str = "hdrnet"; // HDRNet tone map (optional)
+                                             // Phase 11.5 additions:
+pub const MODEL_KEY_COLOR_PARAMS: &str = "color_params"; // ColorParamNet (optional)
+pub const MODEL_KEY_MODNET: &str = "modnet"; // MODNet segmentation (optional)
 
 struct Entry {
     key: String,
